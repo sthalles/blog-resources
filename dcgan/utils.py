@@ -4,6 +4,9 @@ from tqdm import tqdm
 import os
 from scipy.io import loadmat
 import numpy as np
+import matplotlib.cm as cm
+import subprocess
+import glob
 
 class Dataset:
     
@@ -88,7 +91,20 @@ class Dataset:
         for ii in range(0, self.length, batch_size):
             x = self.dataset[ii:ii+batch_size]
             yield self._scale(x)
+            
 
+def generate_video(video_name, folder="./video"):
+    cwd = os.getcwd()
+    if not isdir(folder):
+        os.makedirs(folder)
+    os.chdir(folder)
+    subprocess.call([
+        'ffmpeg', '-framerate', '8', '-i', 'file%02d.png', '-r', '30', '-pix_fmt', 'yuv420p',
+        'video_' + video_name + '.mp4'
+    ])
+    for file_name in glob.glob("*.png"):
+        os.remove(file_name)
+    os.chdir(cwd)
 
 class DLProgress(tqdm):
     last_block = 0
