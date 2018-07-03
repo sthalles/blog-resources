@@ -1,0 +1,1 @@
+Eager execution DCGAN implementation.
