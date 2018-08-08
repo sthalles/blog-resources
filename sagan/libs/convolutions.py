@@ -14,27 +14,147 @@ from tensorflow.python.keras._impl.keras import constraints
 from tensorflow.python.keras._impl.keras import initializers
 from tensorflow.python.keras._impl.keras import regularizers
 from tensorflow.python.keras._impl.keras.engine import Layer
+from tensorflow.python.layers import core
+from tensorflow.python.framework import ops
+from tensorflow.python.ops import standard_ops
+from tensorflow.python.ops import gen_math_ops
 
-def _l2normalize(v, epsilon=1e-12):
+def _l2normalizer(v, epsilon=1e-12):
     return v / (K.sum(v ** 2) ** 0.5 + epsilon)
 
 
-def power_iteration(W, u, Ip=1):
+def power_iteration(W, u, rounds=1):
     '''
     Accroding the paper, we only need to do power iteration one time.
     '''
-
-    if u is None:
-        u = K.random_normal_variable([1, W.shape[0]], 0, 1)  # [1, out_channels]
-
     _u = u
 
-    for i in range(Ip):
-        _v = _l2normalize(K.dot(_u, W))
-        _u = _l2normalize(K.dot(_v, K.transpose(W)))
+    for i in range(rounds):
+        _v = _l2normalizer(K.dot(_u, W))
+        _u = _l2normalizer(K.dot(_v, K.transpose(W)))
 
-    sigma = K.sum(K.dot(_u, W) * _v)
-    return sigma, _u, _v
+    W_sn = K.sum(K.dot(_u, W) * _v)
+    return W_sn, _u, _v
+
+
+@tf_export('keras.layers.Dense')
+class Dense(core.Dense):
+    """Just your regular densely-connected NN layer.
+    `Dense` implements the operation:
+    `output = activation(dot(input, kernel) + bias)`
+    where `activation` is the element-wise activation function
+    passed as the `activation` argument, `kernel` is a weights matrix
+    created by the layer, and `bias` is a bias vector created by the layer
+    (only applicable if `use_bias` is `True`).
+    Note: if the input to the layer has a rank greater than 2, then
+    it is flattened prior to the initial dot product with `kernel`.
+    Example:
+    ```python
+        # as first layer in a sequential model:
+        model = Sequential()
+        model.add(Dense(32, input_shape=(16,)))
+        # now the model will take as input arrays of shape (*, 16)
+        # and output arrays of shape (*, 32)
+        # after the first layer, you don't need to specify
+        # the size of the input anymore:
+        model.add(Dense(32))
+    ```
+    Arguments:
+        units: Positive integer, dimensionality of the output space.
+        activation: Activation function to use.
+            If you don't specify anything, no activation is applied
+            (ie. "linear" activation: `a(x) = x`).
+        use_bias: Boolean, whether the layer uses a bias vector.
+        kernel_initializer: Initializer for the `kernel` weights matrix.
+        bias_initializer: Initializer for the bias vector.
+        kernel_regularizer: Regularizer function applied to
+            the `kernel` weights matrix.
+        bias_regularizer: Regularizer function applied to the bias vector.
+        activity_regularizer: Regularizer function applied to
+            the output of the layer (its "activation")..
+        kernel_constraint: Constraint function applied to
+            the `kernel` weights matrix.
+        bias_constraint: Constraint function applied to the bias vector.
+    Input shape:
+        nD tensor with shape: `(batch_size, ..., input_dim)`.
+        The most common situation would be
+        a 2D input with shape `(batch_size, input_dim)`.
+    Output shape:
+        nD tensor with shape: `(batch_size, ..., units)`.
+        For instance, for a 2D input with shape `(batch_size, input_dim)`,
+        the output would have shape `(batch_size, units)`.
+    """
+
+    def __init__(self,
+                 units,
+                 activation=None,
+                 use_bias=True,
+                 kernel_initializer='glorot_uniform',
+                 bias_initializer='zeros',
+                 kernel_regularizer=None,
+                 bias_regularizer=None,
+                 activity_regularizer=None,
+                 kernel_constraint=None,
+                 bias_constraint=None,
+                 spectral_normalization=True,
+                 **kwargs):
+        if 'input_shape' not in kwargs and 'input_dim' in kwargs:
+            kwargs['input_shape'] = (kwargs.pop('input_dim'),)
+
+        super(Dense, self).__init__(
+            activity_regularizer=regularizers.get(activity_regularizer),
+            units=int(units),
+            activation=activations.get(activation),
+            use_bias=use_bias,
+            kernel_initializer=initializers.get(kernel_initializer),
+            bias_initializer=initializers.get(bias_initializer),
+            kernel_regularizer=regularizers.get(kernel_regularizer),
+            bias_regularizer=regularizers.get(bias_regularizer),
+            kernel_constraint=constraints.get(kernel_constraint),
+            bias_constraint=constraints.get(bias_constraint),
+            **kwargs)
+
+        self.u = K.random_normal_variable([1, units], 0, 1, dtype=self.dtype, name="sn_estimate")  # [1, out_channels]
+        self.spectral_normalization = spectral_normalization
+
+    def compute_spectral_normal(self, training=True):
+        # Spectrally Normalized Weight
+        if self.spectral_normalization:
+            # Get kernel tensor shape [batch, units]
+            W_shape = self.kernel.shape.as_list()
+
+            # Flatten the Tensor
+            W_mat = K.reshape(self.kernel, [W_shape[-1], -1])  # [out_channels, N]
+
+            W_sn, u, v = power_iteration(W_mat, self.u)
+
+            if training:
+                # Update estimated 1st singular vector
+                self.u.assign(u)
+
+            return self.kernel / W_sn
+        else:
+            return self.kernel
+
+    def call(self, inputs, training=True):
+        inputs = ops.convert_to_tensor(inputs, dtype=self.dtype)
+        shape = inputs.get_shape().as_list()
+        if len(shape) > 2:
+            # Broadcasting is required for the inputs.
+            outputs = standard_ops.tensordot(inputs, self.compute_spectral_normal(training), [[len(shape) - 1],
+                                                                   [0]])
+            # Reshape the output back to the original ndim of the input.
+            if not context.executing_eagerly():
+                output_shape = shape[:-1] + [self.units]
+                outputs.set_shape(output_shape)
+        else:
+            outputs = gen_math_ops.mat_mul(inputs, self.kernel)
+        if self.use_bias:
+            outputs = nn.bias_add(outputs, self.bias)
+        if self.activation is not None:
+            return self.activation(outputs)  # pylint: disable=not-callable
+        return outputs
+
 
 @tf_export('keras.layers.Conv2D', 'keras.layers.Convolution2D')
 class Conv2D(tf_convolutional_layers.Conv2D, Layer):
@@ -148,25 +268,25 @@ class Conv2D(tf_convolutional_layers.Conv2D, Layer):
             bias_constraint=constraints.get(bias_constraint),
             **kwargs)
 
-        self.u = K.random_normal_variable([1, filters], 0, 1)  # [1, out_channels]
+        self.u = K.random_normal_variable([1, filters], 0, 1, dtype=self.dtype, name="sn_estimate")  # [1, out_channels]
         self.spectral_normalization = spectral_normalization
 
     def compute_spectral_normal(self, training=True):
         # Spectrally Normalized Weight
         if self.spectral_normalization:
-            # Get kernel tensor shape
+            # Get kernel tensor shape [kernel_h, kernel_w, in_channels, out_channels]
             W_shape = self.kernel.shape.as_list()
 
             # Flatten the Tensor
-            W_mat = K.reshape(self.kernel, [W_shape[-1], -1])  # [out_c, N]
+            W_mat = K.reshape(self.kernel, [W_shape[-1], -1])  # [out_channels, N]
 
-            sigma, u, v = power_iteration(W_mat, self.u)
+            W_sn, u, v = power_iteration(W_mat, self.u)
 
             if training:
                 # Update estimated 1st singular vector
                 self.u.assign(u)
 
-            return self.kernel / sigma
+            return self.kernel / W_sn
         else:
             return self.kernel
 
@@ -212,7 +332,6 @@ class Conv2D(tf_convolutional_layers.Conv2D, Layer):
         }
         base_config = super(Conv2D, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
-
 
 
 @tf_export('keras.layers.Conv2DTranspose',
@@ -333,13 +452,13 @@ class Conv2DTranspose(tf_convolutional_layers.Conv2DTranspose, Layer):
             bias_constraint=constraints.get(bias_constraint),
             **kwargs)
         self.spectral_normalization = spectral_normalization
-        self.u = K.random_normal_variable([1, filters], 0, 1)  # [1, out_channels]
+        self.u = K.random_normal_variable([1, filters], 0, 1, dtype=self.dtype, name="sn_estimate")  # [1, out_channels]
 
     def compute_spectral_normal(self, training=True):
         # Spectrally Normalized Weight
 
         if self.spectral_normalization:
-            # Get kernel tensor shape
+            # Get the kernel tensor shape
             W_shape = self.kernel.shape.as_list()
 
             # Flatten the Tensor
@@ -356,7 +475,7 @@ class Conv2DTranspose(tf_convolutional_layers.Conv2DTranspose, Layer):
         else:
             return self.kernel
 
-    # Subscrib the call() method to include Spectral normalization call
+    # Overwrite the call() method to include Spectral normalization call
     def call(self, inputs, training=True):
         inputs_shape = array_ops.shape(inputs)
         batch_size = inputs_shape[0]
