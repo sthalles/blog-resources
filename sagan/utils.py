@@ -22,11 +22,9 @@ def tf_record_parser(record):
     return tf.to_float(image)
 
 
-def normalizer(image, label=None, dtype=tf.float64):
+def normalizer(image, dtype):
     image = tf.cast(image, dtype=dtype) / 128.0 - 1.0
     # noise addition normalization
     image += tf.random_uniform(shape=tf.shape(image), minval=0., maxval=1./128., dtype=dtype)
 
-    if label is not None:
-       return image, label
     return image

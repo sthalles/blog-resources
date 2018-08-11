@@ -1,10 +1,10 @@
 import tensorflow as tf
-from libs.convolutions import Conv2D, Conv2DTranspose
+from libs.convolutions import Conv2D, Conv2DTranspose, Dense
 from libs.self_attention import SelfAttention
 tfe = tf.contrib.eager
 
 class Generator(tf.keras.Model):
-    def __init__(self, dtype=tf.float64):
+    def __init__(self, dtype):
         super(Generator, self).__init__()
 
         # In the SAGAN implementation, the first dense layer has ReLU
@@ -23,7 +23,7 @@ class Generator(tf.keras.Model):
         self.bn3 = tf.keras.layers.BatchNormalization(scale=False, dtype=dtype, fused=False, name="bn1")
 
         # pass the number of filters of the current feature volume
-        self.attention = SelfAttention(64)
+        self.attention = SelfAttention(64, dtype=dtype)
 
         self.transp_conv4 = Conv2DTranspose(32, 4, spectral_normalization=True, dtype=dtype, use_bias=False, strides=2,
                                             padding="SAME", activation=None)
@@ -70,7 +70,7 @@ class Generator(tf.keras.Model):
 
 
 class Discriminator(tf.keras.Model):
-    def __init__(self, alpha, dtype=tf.float64):
+    def __init__(self, alpha, dtype):
         super(Discriminator, self).__init__()
         self.alpha = alpha
         # -------- Block 1
@@ -78,14 +78,14 @@ class Discriminator(tf.keras.Model):
         self.conv2 = Conv2D(64, 4, spectral_normalization=True, strides=2, dtype=dtype, padding='SAME', activation=None)
 
         # pass the number of filters of the current feature volume
-        self.attention = SelfAttention(64)
+        self.attention = SelfAttention(64, dtype=dtype)
 
         self.conv3 = Conv2D(128, 4, spectral_normalization=True, dtype=dtype, strides=2, padding='SAME', activation=None)
         self.conv4 = Conv2D(256, 4, spectral_normalization=True, dtype=dtype, strides=2, padding='SAME', activation=None)
         self.conv5 = Conv2D(512, 4, spectral_normalization=True, dtype=dtype, strides=2, padding='SAME', activation=None)
 
         self.flat = tf.keras.layers.Flatten()
-        self.fc1 = tf.keras.layers.Dense(units=1, dtype=dtype, activation=None, name="logits")
+        self.fc1 = Dense(units=1, spectral_normalization=True, dtype=dtype, activation=None, name="logits")
 
     def call(self, inputs, is_training):
         net = self.conv1(inputs, training=is_training)

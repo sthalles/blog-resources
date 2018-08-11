@@ -9,7 +9,7 @@ def hw_flatten(x):
     return tf.reshape(x, [x_shape[0], -1, x_shape[-1]]) # return [BATCH, W*H, CHANNELS]
 
 class SelfAttention(tf.keras.Model):
-  def __init__(self, number_of_filters, dtype=tf.float64):
+  def __init__(self, number_of_filters, dtype):
     super(SelfAttention, self).__init__()
     
     self.f = Conv2D(number_of_filters//8, 1, spectral_normalization=True,
